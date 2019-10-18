@@ -24,39 +24,57 @@
 # along with vsc-mympirun.  If not, see <http://www.gnu.org/licenses/>.
 #
 """
-Generate preferred CUDA_VISIBLE_DEVICES as part of srun task prolog
-
-Work around some slurm issues
+As part of srun task prolog
+* Start MPS server/controller when CUDA_MPS_ACTIVE_THREAD_PERCENTAGE is set
+* Generate single CUDA_VISIBLE_DEVICES to MYTASKPROLOG_ONE_GPU (if set)
+  This is best-effort guess work to work around broken --gpus-per-task=1 --gpu_bind=closest
 """
 
 from __future__ import print_function
 
-from vsc.utils.affinity import sched_getaffinity
+import os
+from vsc.utils.run import run
 
+# read from environment, mainly for unittests
+MPS_CONTROL = os.environ.get('MYTASKPROLOG_MPS_CONTROL', "/usr/bin/nvidia-cuda-mps-control")
 
 def export(key, value):
     """print export key=value, which is picked up by the task prolog"""
+    os.environ[key] = value
     print("export %s=%s" % (key, value))
 
 
-def get_preferred_gpu_map():
-    # issue #158: make generic or wait for schedmd fix, eg python nvml bindings
-    #   this is the joltik map: 32 cores, even cores for gpu 0-1, odd for gpus 2-3
-    #   so we prefer first 8 even cores for gpu 0, first 8 odd cores for gpu 1 etc etc
-    GPU_MAP = [0, 2] * 8 + [1, 3] * 8
-    return GPU_MAP
+def setup_mps():
+    """Setup MPS controller/server and export some variables"""
+    # TMPDIR should be per job
+    mpsdir = os.path.join(os.environ['TMPDIR'], 'mps', os.environ['CUDA_VISIBLE_DEVICES'])
+    try:
+        os.makedirs(mpsdir)
+    except Exception as _:
+        # who cares, either it already exists and all is fine, or it doesn't and this is beyond saving
+        pass
 
+    # set the mpsdir per (list of) CUDA_VISIBLE_DEVICES
+    #   then we have a mps-controller/server per set of closest gpus
+    #      or single gpus if they fix the bug
+    export('CUDA_MPS_PIPE_DIRECTORY', mpsdir)
+    export('CUDA_MPS_LOG_DIRECTORY', mpsdir)
 
-def preferred_cvd():
-    """Generate the CUDA_VISIBLE_DEVICES value"""
-    gpu_map = get_preferred_gpu_map()
-    current_idx = [idx for idx, bit in enumerate(sched_getaffinity().get_cpus()) if bit and idx < len(gpu_map)]
-    gpus = set([gpu_map[idx] for idx in current_idx])
-    export('CUDA_VISIBLE_DEVICES', ','.join([str(x) for x in sorted(gpus)]))
+    # the daemon will figure out the race conditions
+    run([MPS_CONTROL, "-d"])
+    # do not start single server
+    # if you run this with gpu-bind=closest and with or without working gpus-per-tasks
+    #   you get all closest gpus; so let the server decide where to run what
+    # server(s) will be started by first client trying to do something
+    #   (as of volta, clients go to gpu directly, so no need for one per gpu)
+
+    # there's also no need to unset the CUDA_VISIBLE_DEVICES, the numbering is correct
+    #   even after MPS takes over (it's already relative to the constrained devices)
 
 
 def main():
-    preferred_cvd()
+    if 'CUDA_MPS_ACTIVE_THREAD_PERCENTAGE' in os.environ:
+        setup_mps()
 
 
 if __name__ == '__main__':

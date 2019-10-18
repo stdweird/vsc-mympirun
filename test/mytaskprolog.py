@@ -32,7 +32,6 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 
 from pmi_utils import PMITest
-from vsc.utils.affinity import sched_getaffinity, sched_setaffinity
 
 
 class TaskPrologEnd2End(PMITest):
@@ -41,14 +40,9 @@ class TaskPrologEnd2End(PMITest):
         super(TaskPrologEnd2End, self).setUp()
         self.script = os.path.join(os.path.dirname(self.script), 'mytaskprolog.py')
 
-    def test_simple(self):
-        origaff = sched_getaffinity()
-
-        aff = sched_getaffinity()
-        aff.set_bits([1])  # only use first core (we can always assume there is one core
-
-        sched_setaffinity(aff)
-        self.pmirun([], pattern='export CUDA_VISIBLE_DEVICES=0')
-
-        # restore
-        sched_setaffinity(origaff)
+    def test_mps(self):
+        os.environ['TMPDIR'] = self.tmpdir
+        os.environ['CUDA_VISIBLE_DEVICES'] = '2,3'
+        os.environ['CUDA_MPS_ACTIVE_THREAD_PERCENTAGE'] = '10'
+        os.environ['MYTASKPROLOG_MPS_CONTROL'] = os.path.join(self.topdir, 'test/showargs')
+        self.pmirun([], pattern='export CUDA_MPS_(PIPE|LOG)_DIRECTORY=%s/mps/2,3' % (self.tmpdir))

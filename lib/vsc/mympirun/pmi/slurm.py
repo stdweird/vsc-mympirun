@@ -207,13 +207,27 @@ class Slurm(Sched):
                 # TODO: this is not slurm specific, needs to be factored out
                 self.log.debug("Not limiting gpus per rank, gpus-all set")
             elif mpi_info.gpus < mpi_info.ranks:
+                # tune the placement
+                args.append("--gpu-bind=closest")
+                # ranks should use one gpu at most
+                args.append("--gpus-per-task=1")
                 # enable MPS
-                #   probably also needs to check for imbalance
-                self.log.raiseException("MPS not supported yet: %s" % mpi_info)
+                mytaskprolog = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'mytaskprolog')
+                args.append("--task-prolog=%s" % mytaskprolog)
+                # set percentage of GPU to use per task
+                pct = (100 * mpi_info.gpus) // mpi_info.ranks
+                self.set_env('CUDA_MPS_ACTIVE_THREAD_PERCENTAGE', pct)
             elif mpi_info.gpus % mpi_info.ranks:
                 self.log.raiseException("Imbalanced tasks and gpus per node (ranks < gpus): %s" % mpi_info)
             else:
-                args.append("--gpus-per-task=%s" % (mpi_info.gpus // mpi_info.ranks))
+                # gpus per task
+                gpt = mpi_info.gpus // mpi_info.ranks
+                # tune the placement, could give lower than expected number of gpus
+                self.log.debug(("Limiting the number of gpus per task to %s, "
+                                "which might be lower than what the closest placement provides") % gpt)
+                args.append("--gpu-bind=closest")
+                # tune the placement
+                args.append("--gpus-per-task=%s" % gpt)
 
         return args
 
